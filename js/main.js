@@ -1,270 +1,557 @@
-// Main Game Initialization and Loop
+// Main game file for Rooftop Runner
 
-// Game state variables
-let game = {
-    scene: null,
-    camera: null,
-    renderer: null,
-    clock: null,
-    physics: null,
-    player: null,
-    world: null,
-    dayNightCycle: null,
-    running: false,
-    score: 0,
-    startTime: 0,
-    username: '',
-    playerColor: 'blue',
-    playerSpeed: 5,
-    referrer: '',
-    portalMode: false
-};
-
-// Initialize the game
-function initGame() {
-    console.log("Initializing game...");
+class Game {
+    constructor() {
+        // Game elements
+        this.scene = null;
+        this.camera = null;
+        this.renderer = null;
+        this.physics = null;
+        this.map = null;
+        this.buildings = null;
+        this.player = null;
+        this.controls = null;
+        this.dayNightCycle = null;
+        this.obstacles = null;
+        
+        // Game state
+        this.isLoading = true;
+        this.isGameOver = false;
+        this.isPaused = false;
+        this.score = 0;
+        this.gameTime = 0;
+        this.lastFrameTime = 0;
+        this.ammoLoaded = false;
+        
+        // DOM elements
+        this.loadingScreen = document.getElementById('loading-screen');
+        this.progressBar = document.querySelector('.progress');
+        this.loadingText = document.querySelector('.loading-text');
+        this.scoreElement = document.getElementById('score');
+        this.timeElement = document.getElementById('time');
+        this.gameOverScreen = document.getElementById('game-over');
+        this.finalScoreElement = document.getElementById('final-score');
+        this.restartButton = document.getElementById('restart-button');
+        
+        // Event listeners
+        this.restartButton.addEventListener('click', () => this.restart());
+        window.addEventListener('resize', () => this.onWindowResize());
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'p' || event.key === 'P') {
+                this.togglePause();
+            }
+        });
+        
+        // Initialize game
+        this.init();
+    }
     
-    try {
-        // Check URL parameters
-        checkURLParameters();
+    init() {
+        // Set up loading screen
+        this.showLoadingScreen(0);
         
-        console.log("Creating renderer...");
-        // Create renderer
-        game.renderer = new THREE.WebGLRenderer({ antialias: true });
-        game.renderer.setSize(window.innerWidth, window.innerHeight);
-        game.renderer.shadowMap.enabled = true;
-        document.body.appendChild(game.renderer.domElement);
+        // Initialize Three.js scene
+        this.initScene();
         
-        console.log("Creating scene...");
+        // Load Ammo.js first, then initialize physics
+        this.loadAmmo()
+            .then(() => this.initPhysics())
+            .then(() => this.loadAssets())
+            .then(() => this.initializeGameComponents())
+            .catch(error => {
+                console.error('Game initialization failed:', error);
+                this.loadingText.textContent = 'Error loading game. Please refresh the page.';
+            });
+    }
+    
+    loadAmmo() {
+        this.loadingText.textContent = 'Loading physics engine...';
+        return new Promise((resolve, reject) => {
+            // Check if Ammo is already loaded
+            if (typeof Ammo !== 'undefined') {
+                if (typeof Ammo === 'function') {
+                    // If Ammo is a function, it needs to be initialized
+                    Ammo().then(() => {
+                        console.log('Ammo.js initialized successfully');
+                        this.ammoLoaded = true;
+                        resolve();
+                    }).catch(error => {
+                        reject(error);
+                    });
+                } else {
+                    // Ammo is already initialized
+                    console.log('Ammo.js already loaded');
+                    this.ammoLoaded = true;
+                    resolve();
+                }
+                return;
+            }
+            
+            // If we get here, we need to load Ammo.js dynamically
+            // Since we've added Ammo.js in the HTML, this is now a fallback
+            const script = document.createElement('script');
+            script.src = 'scripts/ammo.js';
+            script.async = true;
+            
+            script.onload = () => {
+                Ammo().then(() => {
+                    console.log('Ammo.js loaded and initialized successfully');
+                    this.ammoLoaded = true;
+                    resolve();
+                }).catch(error => {
+                    reject(error);
+                });
+            };
+            
+            script.onerror = () => {
+                reject(new Error('Failed to load Ammo.js script'));
+            };
+            
+            document.body.appendChild(script);
+        });
+    }
+    
+    initScene() {
         // Create scene
-        game.scene = new THREE.Scene();
-        game.scene.background = new THREE.Color(0x87CEEB); // Sky blue
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(0x87CEEB); // Sky blue
         
-        console.log("Creating camera...");
         // Create camera
-        game.camera = new THREE.PerspectiveCamera(
-            75, 
-            window.innerWidth / window.innerHeight, 
-            0.1, 
-            1000
+        this.camera = new THREE.PerspectiveCamera(
+            75, // Field of view
+            window.innerWidth / window.innerHeight, // Aspect ratio
+            0.1, // Near clipping plane
+            1000 // Far clipping plane
         );
-        game.camera.position.set(0, 5, 10);
         
-        console.log("Creating clock...");
-        // Create clock for animations
-        game.clock = new THREE.Clock();
+        // Create renderer
+        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.getElementById('game-container').appendChild(this.renderer.domElement);
         
-        console.log("Initializing physics...");
-        // Initialize physics
-        if (typeof Physics !== 'function') {
-            throw new Error("Physics class is not defined. Make sure physics.js is loaded correctly.");
+        // Set up lights
+        this.setupLights();
+    }
+    
+    setupLights() {
+        // Ambient light
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        this.scene.add(ambientLight);
+        
+        // Directional light (sun)
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+        directionalLight.position.set(50, 70, 30);
+        directionalLight.castShadow = true;
+        
+        // Configure shadow properties
+        directionalLight.shadow.mapSize.width = 2048;
+        directionalLight.shadow.mapSize.height = 2048;
+        directionalLight.shadow.camera.near = 0.5;
+        directionalLight.shadow.camera.far = 500;
+        directionalLight.shadow.camera.left = -100;
+        directionalLight.shadow.camera.right = 100;
+        directionalLight.shadow.camera.top = 100;
+        directionalLight.shadow.camera.bottom = -100;
+        
+        this.scene.add(directionalLight);
+        
+        // Store lights for day/night cycle
+        this.sunLight = directionalLight;
+        this.ambientLight = ambientLight;
+    }
+    
+    initPhysics() {
+        if (!this.ammoLoaded) {
+            console.error('Ammo.js not loaded. Cannot initialize physics.');
+            return Promise.reject(new Error('Ammo.js not loaded'));
         }
-        game.physics = new Physics();
         
-        console.log("Initializing world...");
-        // Initialize world with buildings and environment
-        if (typeof World !== 'function') {
-            throw new Error("World class is not defined. Make sure world.js is loaded correctly.");
+        try {
+            // Create physics system with error handling
+            this.physics = new Physics();
+            return this.physics.init()
+                .then(() => {
+                    console.log('Physics initialized successfully');
+                    // Turn off debug renderer to avoid rendering issues
+                    if (this.physics.debugRenderer) {
+                        this.physics.debugRenderer.disable();
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to initialize physics:', error);
+                    this.loadingText.textContent = 'Error initializing physics. Please refresh the page.';
+                    throw error;
+                });
+        } catch (error) {
+            console.error('Error creating physics system:', error);
+            return Promise.reject(error);
         }
-        game.world = new World(game.scene, game.physics);
+    }
+    
+    loadAssets() {
+        this.loadingText.textContent = 'Loading game assets...';
         
-        console.log("Initializing day/night cycle...");
+        return new Promise(resolve => {
+            // Simulate asset loading
+            let progress = 0.1; // Start at 10% since Ammo.js is already loaded
+            const loadingInterval = setInterval(() => {
+                progress += 0.01;
+                this.showLoadingScreen(Math.min(progress, 0.9)); // Cap at 90%
+                
+                if (progress >= 0.9) {
+                    clearInterval(loadingInterval);
+                    resolve();
+                }
+            }, 50);
+            
+            // In a real game, you would use the asset loader:
+            /*
+            const assets = [
+                { name: 'playerModel', url: 'assets/models/player.glb' },
+                { name: 'cityTexture', url: 'assets/textures/city.jpg' },
+                // ... more assets
+            ];
+            
+            return new Promise(resolve => {
+                Utils.loadAssets(
+                    assets,
+                    (progress) => {
+                        this.showLoadingScreen(0.1 + progress * 0.8); // Scale to 10%-90%
+                    },
+                    (loadedAssets) => {
+                        // Store loaded assets
+                        this.assets = loadedAssets;
+                        resolve();
+                    }
+                );
+            });
+            */
+        });
+    }
+    
+    initializeGameComponents() {
+        // Make sure physics is initialized
+        if (!this.physics || !this.ammoLoaded) {
+            console.error('Physics system not initialized. Cannot continue.');
+            this.loadingText.textContent = 'Error initializing physics. Please refresh the page.';
+            return;
+        }
+        
         // Initialize day/night cycle
-        if (typeof DayNightCycle !== 'function') {
-            throw new Error("DayNightCycle class is not defined. Make sure daynight.js is loaded correctly.");
-        }
-        game.dayNightCycle = new DayNightCycle(game.scene, game.renderer);
+        this.dayNightCycle = new DayNightCycle(
+            this.scene,
+            this.sunLight,
+            this.ambientLight
+        );
         
-        console.log("Initializing player...");
+        // Initialize city map
+        this.map = new Map(this.scene, this.physics);
+        
+        // Initialize buildings
+        this.buildings = new Buildings(this.scene, this.physics, this.map);
+        this.buildings.init();
+        
+        // Initialize obstacles
+        this.obstacles = new Obstacles(this.scene, this.physics, this.buildings);
+        this.obstacles.init();
+        
         // Initialize player
-        if (typeof Player !== 'function') {
-            throw new Error("Player class is not defined. Make sure player.js is loaded correctly.");
+        this.player = new Player(this.scene, this.physics, this.camera);
+        this.player.init();
+        
+        // Initialize controls
+        this.controls = new Controls(this.player);
+        this.controls.init();
+        
+        // Set player in map for minimap updates
+        this.map.player = this.player;
+        
+        // Set day/night cycle in map
+        this.map.dayNightCycle = this.dayNightCycle;
+        
+        // Initialize map after setting player
+        this.map.init();
+        
+        // Hide loading screen and start game
+        setTimeout(() => {
+            this.showLoadingScreen(1);
+            this.startGame();
+        }, 500);
+    }
+    
+    startGame() {
+        // Hide loading screen
+        this.loadingScreen.style.display = 'none';
+        
+        // Reset game state
+        this.isLoading = false;
+        this.isGameOver = false;
+        this.score = 0;
+        this.gameTime = 0;
+        this.lastFrameTime = performance.now();
+        
+        // Update score display
+        this.updateScoreDisplay();
+        
+        // Start game loop
+        this.gameLoop();
+    }
+    
+    gameLoop() {
+        if (this.isGameOver) return;
+        
+        try {
+            // Calculate delta time
+            const now = performance.now();
+            const deltaTime = Math.min((now - this.lastFrameTime) / 1000, 0.1); // Cap at 0.1 seconds
+            this.lastFrameTime = now;
+            
+            if (!this.isPaused) {
+                // Update game time
+                this.gameTime += deltaTime;
+                
+                // Update physics
+                if (this.physics) {
+                    this.physics.update(deltaTime);
+                }
+                
+                // Update player
+                this.player.update(deltaTime);
+                
+                // Update day/night cycle
+                this.dayNightCycle.update(deltaTime);
+                
+                // Update map
+                this.map.update();
+                
+                // Update obstacles
+                this.obstacles.update(deltaTime);
+                
+                // Check collectible collisions
+                const collectedItems = this.obstacles.checkCollisions(
+                    this.player.getPosition(),
+                    this.player.radius
+                );
+                
+                // Process collected items
+                this.processCollectedItems(collectedItems);
+                
+                // Remove collected items from scene
+                this.obstacles.removeCollected();
+                
+                // Check for game over conditions
+                this.checkGameOver();
+                
+                // Update UI
+                this.updateUI();
+            }
+            
+            // Render scene
+            this.renderer.render(this.scene, this.camera);
+            
+            // Continue game loop
+            requestAnimationFrame(() => this.gameLoop());
+        } catch (error) {
+            console.error('Error in game loop:', error);
+            // Try to continue
+            requestAnimationFrame(() => this.gameLoop());
         }
-        game.player = new Player(game.scene, game.physics, game.camera);
+    }
+    
+    processCollectedItems(collectedItems) {
+        collectedItems.forEach(item => {
+            // Add to score
+            this.score += item.value;
+            
+            // Create pickup effect
+            Utils.createPickupEffect(
+                this.scene,
+                item.object.position.clone(),
+                item.object.material.color.getHex(),
+                1,
+                0.5
+            );
+            
+            // Handle special items
+            if (item.type === 'powerup') {
+                // Apply power-up effect (e.g., temporary speed boost)
+                this.player.moveSpeed *= 1.5;
+                
+                // Reset after duration
+                setTimeout(() => {
+                    this.player.moveSpeed /= 1.5;
+                }, 5000);
+            }
+        });
         
-        // Set player position based on portal entry if applicable
-        if (game.portalMode) {
-            game.player.setPortalEntryPosition();
-        }
+        // Update score display
+        this.updateScoreDisplay();
+    }
+    
+    updateScoreDisplay() {
+        this.scoreElement.textContent = Utils.formatScore(this.score);
+    }
+    
+    updateUI() {
+        // Update time display with day/night state
+        const timeOfDay = this.dayNightCycle.getTimeOfDay();
+        this.timeElement.textContent = timeOfDay;
         
-        console.log("Initializing portal...");
-        // Initialize portal
-        if (typeof initPortal !== 'function') {
-            throw new Error("initPortal function is not defined. Make sure portal.js is loaded correctly.");
-        }
-        initPortal(game.scene, game.world);
-        
-        // Setup event listeners
-        window.addEventListener('resize', onWindowResize);
-        
-        // Start the game loop
-        game.running = true;
-        game.startTime = Date.now();
-        animate();
-        
-        console.log("Showing UI...");
-        // Show game UI
-        document.getElementById('game-ui').style.display = 'block';
-        document.getElementById('controls-info').style.display = 'block';
-        
-        // Initialize UI if the function exists
-        if (typeof window.initUI === 'function') {
-            window.initUI();
+        // Change UI colors based on time of day
+        if (timeOfDay === 'Night') {
+            document.getElementById('score-container').style.backgroundColor = 'rgba(0, 0, 50, 0.7)';
+            document.getElementById('time-container').style.backgroundColor = 'rgba(0, 0, 50, 0.7)';
         } else {
-            console.warn("initUI function not available");
+            document.getElementById('score-container').style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            document.getElementById('time-container').style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
         }
-        
-        console.log("Game initialization complete!");
-    } catch (error) {
-        console.error("Error initializing game:", error.message);
-        console.error("Stack trace:", error.stack);
-        alert("There was an error starting the game: " + error.message);
     }
-}
-
-// Check for URL parameters (from portal)
-function checkURLParameters() {
-    try {
-        const urlParams = new URLSearchParams(window.location.search);
-        
-        // Check if coming from portal
-        if (urlParams.has('portal') && urlParams.get('portal') === 'true') {
-            console.log("Portal entry detected");
-            game.portalMode = true;
-            
-            // Get player data from URL
-            if (urlParams.has('username')) {
-                game.username = urlParams.get('username');
-            }
-            
-            if (urlParams.has('color')) {
-                game.playerColor = urlParams.get('color');
-            }
-            
-            if (urlParams.has('speed')) {
-                game.playerSpeed = parseFloat(urlParams.get('speed'));
-            }
-            
-            if (urlParams.has('ref')) {
-                game.referrer = urlParams.get('ref');
-            }
-            
-            // Skip start screen if from portal
-            document.getElementById('start-screen').style.display = 'none';
-            initGame();
+    
+    checkGameOver() {
+        // Check if player has fallen below the city
+        if (this.player.getPosition().y < -20) {
+            this.gameOver();
         }
-    } catch (error) {
-        console.error("Error checking URL parameters:", error);
     }
-}
-
-// Handle window resize
-function onWindowResize() {
-    if (!game.camera || !game.renderer) return;
     
-    game.camera.aspect = window.innerWidth / window.innerHeight;
-    game.camera.updateProjectionMatrix();
-    game.renderer.setSize(window.innerWidth, window.innerHeight);
-}
-
-// Main game loop
-function animate() {
-    if (!game.running) return;
+    gameOver() {
+        // Set game over state
+        this.isGameOver = true;
+        
+        // Show game over screen
+        this.gameOverScreen.classList.remove('hidden');
+        this.finalScoreElement.textContent = Utils.formatScore(this.score);
+        
+        // Check for high score
+        if (Utils.saveHighScore(this.score)) {
+            // Show high score message
+            const highScoreMessage = document.createElement('p');
+            highScoreMessage.textContent = 'New High Score!';
+            highScoreMessage.style.color = '#FFD700';
+            highScoreMessage.style.fontSize = '1.5em';
+            
+            const gameOverContent = document.querySelector('.game-over-content');
+            gameOverContent.insertBefore(highScoreMessage, this.restartButton);
+        }
+    }
     
-    requestAnimationFrame(animate);
+    restart() {
+        // Hide game over screen
+        this.gameOverScreen.classList.add('hidden');
+        
+        // Reset player
+        this.player.reset();
+        
+        // Reset obstacles
+        this.obstacles.reset();
+        
+        // Reset day/night cycle
+        this.dayNightCycle.reset();
+        
+        // Reset game state
+        this.isGameOver = false;
+        this.score = 0;
+        this.gameTime = 0;
+        this.lastFrameTime = performance.now();
+        
+        // Update score display
+        this.updateScoreDisplay();
+        
+        // Start game loop again
+        this.gameLoop();
+    }
     
-    try {
-        const delta = game.clock.getDelta();
+    togglePause() {
+        this.isPaused = !this.isPaused;
         
-        // Update physics
-        game.physics.update(delta);
+        // Show/hide pause indicator
+        if (this.isPaused) {
+            // Create pause screen if it doesn't exist
+            if (!this.pauseScreen) {
+                this.pauseScreen = document.createElement('div');
+                this.pauseScreen.id = 'pause-screen';
+                this.pauseScreen.style.cssText = `
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    background-color: rgba(0, 0, 0, 0.7);
+                    color: white;
+                    padding: 20px 40px;
+                    border-radius: 10px;
+                    font-size: 2em;
+                    z-index: 20;
+                `;
+                this.pauseScreen.textContent = 'PAUSED';
+                document.getElementById('game-container').appendChild(this.pauseScreen);
+            } else {
+                this.pauseScreen.style.display = 'block';
+            }
+        } else if (this.pauseScreen) {
+            this.pauseScreen.style.display = 'none';
+        }
+    }
+    
+    showLoadingScreen(progress) {
+        // Update progress bar
+        this.progressBar.style.width = `${progress * 100}%`;
         
-        // Update player
-        game.player.update(delta);
-        
-        // Update day/night cycle
-        game.dayNightCycle.update(delta);
-        
-        // Update portal
-        updatePortal(delta, game.player);
-        
-        // Update UI - make sure we check if the function exists
-        if (typeof window.updateUI === 'function') {
-            window.updateUI();
+        // Update loading text based on progress
+        if (progress < 0.1) {
+            this.loadingText.textContent = 'Loading physics engine...';
+        } else if (progress < 0.3) {
+            this.loadingText.textContent = 'Initializing physics...';
+        } else if (progress < 0.6) {
+            this.loadingText.textContent = 'Building city...';
+        } else if (progress < 0.9) {
+            this.loadingText.textContent = 'Placing obstacles...';
         } else {
-            console.warn("updateUI function not available");
+            this.loadingText.textContent = 'Ready!';
         }
         
-        // Check for game over condition
-        if (game.player.position.y < -20) {
-            gameOver();
+        // When fully loaded
+        if (progress >= 1) {
+            this.loadingScreen.style.opacity = 0;
+            
+            // Wait for fade out animation to complete
+            setTimeout(() => {
+                this.loadingScreen.style.display = 'none';
+                this.loadingScreen.style.opacity = 1;
+            }, 500);
         }
+    }
+    
+    onWindowResize() {
+        // Update camera aspect ratio
+        this.camera.aspect = window.innerWidth / window.innerHeight;
+        this.camera.updateProjectionMatrix();
         
-        // Render scene
-        game.renderer.render(game.scene, game.camera);
-    } catch (error) {
-        console.error("Error in animation loop:", error);
-        game.running = false;
+        // Update renderer size
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    
+    dispose() {
+        // Clean up resources
+        window.removeEventListener('resize', this.onWindowResize);
+        
+        // Dispose of Three.js resources
+        this.renderer.dispose();
+        
+        // Clean up physics
+        this.physics.cleanup();
     }
 }
 
-// Game over function
-function gameOver() {
-    game.running = false;
-    
-    // Create game over screen
-    const gameOverDiv = document.createElement('div');
-    gameOverDiv.id = 'game-over';
-    gameOverDiv.innerHTML = `
-        <h2>GAME OVER</h2>
-        <p>You fell from the rooftops!</p>
-        <p>Score: ${game.score}</p>
-        <button id="restart-button">TRY AGAIN</button>
-    `;
-    document.body.appendChild(gameOverDiv);
-    
-    // Add event listener to restart button
-    document.getElementById('restart-button').addEventListener('click', () => {
-        location.reload();
-    });
-}
-
-// Start the game when the button is clicked
-window.addEventListener('load', function() {
-    console.log("Page loaded, setting up event listeners");
-    
-    // Check if THREE is available
+// Initialize game when page is loaded
+window.addEventListener('load', () => {
+    // Check if Three.js is loaded
     if (typeof THREE === 'undefined') {
-        console.error("THREE.js not loaded!");
-        alert("THREE.js library failed to load. Please refresh the page or check your internet connection.");
+        console.error('Three.js not found. Make sure you include it before main.js');
+        document.body.innerHTML = '<div style="color: red; padding: 20px;">Error: Three.js not loaded. Please check your script includes.</div>';
         return;
     }
     
-    // Check URL parameters first for portal entry
-    checkURLParameters();
-    
-    // Set up start button
-    const startButton = document.getElementById('start-button');
-    if (startButton) {
-        startButton.addEventListener('click', function() {
-            console.log("Start button clicked");
-            
-            // Get username if provided
-            const usernameInput = document.getElementById('username-input');
-            if (usernameInput && usernameInput.value.trim() !== '') {
-                game.username = usernameInput.value.trim();
-            }
-            
-            // Hide start screen
-            const startScreen = document.getElementById('start-screen');
-            if (startScreen) {
-                startScreen.style.display = 'none';
-            }
-            
-            // Initialize game
-            initGame();
-        });
-    } else {
-        console.error("Start button not found in the DOM!");
-    }
+    const game = new Game();
 });
